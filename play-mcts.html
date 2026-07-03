@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Triangle Token MCTS Game</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #1e1e1e;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        #top {
+            margin-bottom: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+
+        canvas {
+            background: #2b2b2b;
+            border: 2px solid #444;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        button,
+        input,
+        select {
+            padding: 6px 12px;
+            background: #444;
+            color: white;
+            border: 1px solid #666;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #555;
+        }
+
+        #status {
+            margin-top: 15px;
+            font-size: 20px;
+            font-weight: bold;
+            height: 30px;
+        }
+
+        #rules {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #aaa;
+            max-width: 500px;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="top">
+        <label for="modeSelect">Mode:</label>
+        <select id="modeSelect">
+            <option value="hum_ai">Human vs AI</option>
+            <option value="ai_ai">AI vs AI</option>
+            <option value="hum_hum">Human vs Human</option>
+            <option value="ai_hum">AI vs Human</option>
+        </select>
+
+        <label for="simInput">Simulations:</label>
+        <input id="simInput" value="1500" min="100" step="100" type="number" style="width: 70px;">
+        
+        <button id="newBtn">New Game</button>
+    </div>
+
+    <canvas id="board"></canvas>
+
+    <div id="status"></div>
+    <div id="rules">
+        Place tokens 1 through 7 in ascending order anywhere on the grid. <br>
+        When all 14 tokens are placed, the player who owns the largest number adjacent to the final empty spot <strong>loses</strong>.
+    </div>
+
+    <script>
+        const canvas = document.getElementById("board");
+        const ctx = canvas.getContext("2d");
+
+        canvas.width = 500;
+        canvas.height = 450;
+
+        // Map 15 triangle nodes into rows:
+        const NODE_MAP = [];
+        let index = 0;
+        for (let r = 0; r < 5; r++) {
+            for (let c = 0; c <= r; c++) {
+                NODE_MAP.push({ id: index++, row: r, col: c });
+            }
+        }
+
+        // Build adjacency list for standard triangular connections
+        function getNeighbors(idx) {
+            const node = NODE_MAP[idx];
+            const r = node.row;
+            const c = node.col;
+            const neighbors = [];
+
+            NODE_MAP.forEach((other, oIdx) => {
+                if (oIdx === idx) return;
+                if (other.row === r && Math.abs(other.col - c) === 1) neighbors.push(oIdx);
+                if (other.row === r - 1 && (other.col === c || other.col === c - 1)) neighbors.push(oIdx);
+                if (other.row === r + 1 && (other.col === c || other.col === c + 1)) neighbors.push(oIdx);
+            });
+            return neighbors;
+        }
+
+        const ADJACENCY = Array.from({ length: 15 }, (_, i) => getNeighbors(i));
+
+        let game;
+        let isAiThinking = false;
+
+        class Game {
+            constructor(p0Type, p1Type) {
+                this.board = Array(15).fill(null);
+                this.turnPlayer = 0; 
+                this.tokensPlaced = [0, 0]; 
+                this.players = [
+                    { id: 0, name: p0Type === "hum" ? "Blue (Player 1)" : "Blue (AI 1)", type: p0Type, color: "#0077ff" },
+                    { id: 1, name: p1Type === "hum" ? "Red (Player 2)" : "Red (AI 2)", type: p1Type, color: "#ff4444" }
+                ];
+            }
+
+            clone() {
+                let g = new Game(this.players[0].type, this.players[1].type);
+                g.board = this.board.map(cell => cell ? { ...cell } : null);
+                g.turnPlayer = this.turnPlayer;
+                g.tokensPlaced = [...this.tokensPlaced];
+                return g;
+            }
+
+            legalMoves() {
+                if (this.gameOver()) return [];
+                const nextToken = this.tokensPlaced[this.turnPlayer] + 1;
+                
+                let moves = [];
+                for (let i = 0; i < 15; i++) {
+                    if (this.board[i] === null) {
+                        moves.push({ targetIndex: i, token: nextToken });
+                    }
+                }
+                return moves;
+            }
+
+            play(move) {
+                this.board[move.targetIndex] = {
+                    player: this.turnPlayer,
+                    token: move.token
+                };
+                this.tokensPlaced[this.turnPlayer]++;
+                this.turnPlayer = 1 - this.turnPlayer;
+            }
+
+            gameOver() {
+                return (this.tokensPlaced[0] === 7 && this.tokensPlaced[1] === 7);
+            }
+
+            winner() {
+                if (!this.gameOver()) return -1;
+
+                let emptySpot = this.board.findIndex(cell => cell === null);
+                if (emptySpot === -1) return -1; 
+
+                let neighbors = ADJACENCY[emptySpot];
+                let maxToken = -1;
+                let losingPlayers = new Set();
+
+                neighbors.forEach(nIdx => {
+                    let cell = this.board[nIdx];
+                    if (cell) {
+                        if (cell.token > maxToken) {
+                            maxToken = cell.token;
+                            losingPlayers.clear();
+                            losingPlayers.add(cell.player);
+                        } else if (cell.token === maxToken) {
+                            losingPlayers.add(cell.player);
+                        }
+                    }
+                });
+
+                // Fixed Draw logic check
+                if (losingPlayers.size > 1 || losingPlayers.size === 0) {
+                    return -1; 
+                }
+
+                let loser = Array.from(losingPlayers)[0];
+                return 1 - loser; 
+            }
+        }
+
+        class MCTSNode {
+            constructor(state, parent = null, move = null) {
+                this.state = state;
+                this.parent = parent;
+                this.move = move;
+                this.children = [];
+                this.wins = 0;
+                this.visits = 0;
+                this.untried = state.legalMoves();
+            }
+
+            bestUCT() {
+                let c = 1.414;
+                return this.children.reduce((best, x) => {
+                    let u = x.wins / x.visits + c * Math.sqrt(Math.log(this.visits) / x.visits);
+                    let bu = best.wins / best.visits + c * Math.sqrt(Math.log(this.visits) / best.visits);
+                    return u > bu ? x : best;
+                });
+            }
+        }
+
+        function mcts(rootState, sims) {
+            let root = new MCTSNode(rootState);
+
+            for (let i = 0; i < sims; i++) {
+                let node = root;
+                let state = rootState.clone();
+
+                while (node.untried.length === 0 && node.children.length > 0) {
+                    node = node.bestUCT();
+                    state.play(node.move);
+                }
+
+                if (node.untried.length > 0) {
+                    let m = node.untried.splice(Math.random() * node.untried.length | 0, 1)[0];
+                    state.play(m);
+                    let child = new MCTSNode(state.clone(), node, m);
+                    node.children.push(child);
+                    node = child;
+                }
+
+                while (!state.gameOver()) {
+                    let legal = state.legalMoves();
+                    if (legal.length === 0) break;
+                    let move = legal[Math.random() * legal.length | 0];
+                    state.play(move);
+                }
+
+                let win = state.winner();
+                while (node) {
+                    node.visits++;
+                    if (win === -1) {
+                        node.wins += 0.5;
+                    } else if (win === node.parent?.state.turnPlayer) {
+                        node.wins += 1;
+                    }
+                    node = node.parent;
+                }
+            }
+
+            return root.children.reduce((a, b) => a.visits > b.visits ? a : b).move;
+        }
+
+        function getNodeCoords(idx) {
+            const node = NODE_MAP[idx];
+            const startY = 80;
+            const rowSpacing = 80;
+            const colSpacing = 80;
+            const y = startY + node.row * rowSpacing;
+            const x = canvas.width / 2 - (node.row * colSpacing) / 2 + node.col * colSpacing;
+            return { x, y };
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = "#444";
+            ctx.lineWidth = 2;
+            for (let i = 0; i < 15; i++) {
+                let from = getNodeCoords(i);
+                ADJACENCY[i].forEach(nIdx => {
+                    if (nIdx > i) {
+                        let to = getNodeCoords(nIdx);
+                        ctx.beginPath();
+                        ctx.moveTo(from.x, from.y);
+                        ctx.lineTo(to.x, to.y);
+                        ctx.stroke();
+                    }
+                });
+            }
+
+            for (let i = 0; i < 15; i++) {
+                let { x, y } = getNodeCoords(i);
+                let cell = game.board[i];
+
+                ctx.beginPath();
+                ctx.arc(x, y, 26, 0, Math.PI * 2);
+
+                if (cell !== null) {
+                    let p = game.players[cell.player];
+                    ctx.fillStyle = p.color;
+                    ctx.fill();
+
+                    ctx.fillStyle = "white";
+                    ctx.font = "bold 20px Arial";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(cell.token, x, y);
+                } else {
+                    ctx.fillStyle = "#1e1e1e";
+                    ctx.fill();
+                    ctx.strokeStyle = "#888";
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+            }
+
+            let status = document.getElementById("status");
+            if (game.gameOver()) {
+                let w = game.winner();
+                status.innerHTML = w === -1 ? "Game Over: Tied Game!" : game.players[w].name + " Wins!";
+                return;
+            }
+
+            if (isAiThinking) {
+                status.innerHTML = `${game.players[game.turnPlayer].name} is computing...`;
+            } else {
+                let currentToken = game.tokensPlaced[game.turnPlayer] + 1;
+                status.innerHTML = `${game.players[game.turnPlayer].name}'s turn &rarr; Placing token <strong>#${currentToken}</strong>`;
+            }
+        }
+
+        canvas.onclick = e => {
+            if (game.gameOver() || isAiThinking) return;
+            if (game.players[game.turnPlayer].type !== "hum") return;
+
+            let rect = canvas.getBoundingClientRect();
+            let clickX = e.clientX - rect.left;
+            let clickY = e.clientY - rect.top;
+
+            let clickedIndex = -1;
+            for (let i = 0; i < 15; i++) {
+                let { x, y } = getNodeCoords(i);
+                let dist = Math.hypot(clickX - x, clickY - y);
+                if (dist <= 28) {
+                    clickedIndex = i;
+                    break;
+                }
+            }
+
+            if (clickedIndex !== -1 && game.board[clickedIndex] === null) {
+                let nextToken = game.tokensPlaced[game.turnPlayer] + 1;
+                game.play({ targetIndex: clickedIndex, token: nextToken });
+                draw();
+
+                if (!game.gameOver()) {
+                    checkTurn();
+                }
+            }
+        };
+
+        function checkTurn() {
+            if (game.gameOver()) return;
+            
+            if (game.players[game.turnPlayer].type === "ai") {
+                isAiThinking = true;
+                draw();
+                setTimeout(aiMove, 100);
+            }
+        }
+
+        function aiMove() {
+            if (game.gameOver()) {
+                isAiThinking = false;
+                return;
+            }
+
+            let sims = +document.getElementById("simInput").value;
+            let move = mcts(game.clone(), sims);
+
+            game.play(move);
+            isAiThinking = false;
+            draw();
+
+            checkTurn();
+        }
+
+        function newGame() {
+            let mode = document.getElementById("modeSelect").value;
+            let p0 = "hum", p1 = "ai"; // Default
+
+            if (mode === "ai_ai") { p0 = "ai"; p1 = "ai"; }
+            else if (mode === "hum_hum") { p0 = "hum"; p1 = "hum"; }
+            else if (mode === "ai_hum") { p0 = "ai"; p1 = "hum"; }
+
+            isAiThinking = false;
+            game = new Game(p0, p1);
+            draw();
+            checkTurn();
+        }
+
+        document.getElementById("newBtn").onclick = newGame;
+        document.getElementById("modeSelect").onchange = newGame;
+        newGame();
+    </script>
+</body>
+
+</html>
