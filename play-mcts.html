@@ -86,8 +86,7 @@
     <div id="status"></div>
     <div id="rules">
         Place tokens 1 through 7 in ascending order anywhere on the grid. <br>
-        When all 14 tokens are placed, the player who owns the largest number adjacent to the final empty spot <strong>loses</strong>.
-    </div>
+        When all 14 tokens are placed, add up each player's numbers adjacent to the final empty spot. The player with the <strong>higher total loses</strong>.
 
     <script>
         const canvas = document.getElementById("board");
@@ -172,36 +171,28 @@
             }
 
             winner() {
-                if (!this.gameOver()) return -1;
+    if (!this.gameOver()) return -1;
 
-                let emptySpot = this.board.findIndex(cell => cell === null);
-                if (emptySpot === -1) return -1; 
+    const emptySpot = this.board.findIndex(cell => cell === null);
+    if (emptySpot === -1) return -1;
 
-                let neighbors = ADJACENCY[emptySpot];
-                let maxToken = -1;
-                let losingPlayers = new Set();
+    const sums = [0, 0];
 
-                neighbors.forEach(nIdx => {
-                    let cell = this.board[nIdx];
-                    if (cell) {
-                        if (cell.token > maxToken) {
-                            maxToken = cell.token;
-                            losingPlayers.clear();
-                            losingPlayers.add(cell.player);
-                        } else if (cell.token === maxToken) {
-                            losingPlayers.add(cell.player);
-                        }
-                    }
-                });
+    for (const nIdx of ADJACENCY[emptySpot]) {
+        const cell = this.board[nIdx];
+        if (cell) {
+            sums[cell.player] += cell.token;
+        }
+    }
 
-                // Fixed Draw logic check
-                if (losingPlayers.size > 1 || losingPlayers.size === 0) {
-                    return -1; 
-                }
+    // Higher adjacent sum loses.
+    if (sums[0] === sums[1]) {
+        return -1; // draw
+    }
 
-                let loser = Array.from(losingPlayers)[0];
-                return 1 - loser; 
-            }
+    const loser = sums[0] > sums[1] ? 0 : 1;
+    return 1 - loser;
+}
         }
 
         class MCTSNode {
